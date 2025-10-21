@@ -5,38 +5,39 @@ log() {
   echo "[bootstrap] $*"
 }
 
-require_sudo() {
-  if [[ $EUID -eq 0 ]]; then
-    echo ""
-    return
-  fi
-
+declare -a SUDO=()
+if [[ $EUID -ne 0 ]]; then
   if command -v sudo >/dev/null 2>&1; then
-    echo "sudo"
-    return
+    SUDO=(sudo)
+  else
+    log "This script requires administrative privileges. Please run as root or install sudo."
+    exit 1
   fi
+fi
 
-  log "This script requires administrative privileges. Please run as root or install sudo."
-  exit 1
+run_as_root() {
+  if ((${#SUDO[@]})); then
+    "${SUDO[@]}" "$@"
+  else
+    "$@"
+  fi
 }
-
-SUDO="$(require_sudo)"
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 APT_PACKAGES=(bluez bluez-tools bluetooth python3 python3-venv python3-pip python3-dev git)
 
 log "Updating apt package index"
-$SUDO apt-get update
+run_as_root apt-get update
 log "Upgrading installed packages"
-$SUDO apt-get upgrade -y
+run_as_root apt-get upgrade -y
 log "Installing required packages: ${APT_PACKAGES[*]}"
-$SUDO apt-get install -y "${APT_PACKAGES[@]}"
+run_as_root apt-get install -y "${APT_PACKAGES[@]}"
 
 if command -v systemctl >/dev/null 2>&1; then
   log "Enabling and starting bluetooth.service"
-  if ! $SUDO systemctl enable bluetooth.service; then
+  if ! run_as_root systemctl enable bluetooth.service; then
     log "Unable to enable bluetooth.service; continuing"
   fi
-  if ! $SUDO systemctl start bluetooth.service; then
+  if ! run_as_root systemctl start bluetooth.service; then
     log "Unable to start bluetooth.service; continuing"
   fi
 else
