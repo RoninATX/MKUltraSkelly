@@ -4,24 +4,34 @@ Enhanced control program for the Grave & Bones Ultra Skele.
 
 ## BLE device discovery
 
-To capture the Bluetooth Low Energy (BLE) services that power the skeleton, run the interactive scanner provided in this repository. The tool requires the [`bleak`](https://github.com/hbldh/bleak) library and Python 3.8+.
+To capture the Bluetooth Low Energy (BLE) services that power the skeleton, run the discovery tool in this repository. The tool requires the [`bleak`](https://github.com/hbldh/bleak) library and Python 3.8+.
 
 ```bash
 pip install bleak
 ```
 
+On some systems (such as Raspberry Pi OS) you may need to install the package via apt if pip reports an "externally-managed-environment" error:
+
+```bash
+sudo apt install python3-bleak
+```
+
 Run the scanner from the project root:
 
 ```bash
-python tools/scan_ble.py [--device-name "MKUltra Skeleton"] [--mac-address AA:BB:CC:DD:EE:FF] [-v|-vv]
+python tools/scan_ble.py [--scan-duration 30] [--scan-output config/discovered_devices.json] \
+    [--device-name "MKUltra Skeleton"] [--mac-address AA:BB:CC:DD:EE:FF] \
+    [--profile-output config/device_profile.json] [-v|-vv]
 ```
 
-* `--device-name` – friendly name to match during discovery. Defaults to `MKUltra Skeleton` when a MAC address is not provided.
-* `--mac-address` – explicit BLE address (overrides the device name search).
+* `--scan-duration` – how long (in seconds) to listen for advertisements. Defaults to 30 seconds.
+* `--scan-output` – path for the discovery results JSON file (defaults to `config/discovered_devices.json`).
+* `--device-name` – friendly name to profile after discovery (optional).
+* `--mac-address` – explicit BLE address to profile (overrides the device name when provided).
+* `--profile-output` – path for the generated profile when a target device is provided (defaults to `config/device_profile.json`).
 * `-v` / `-vv` – increase logging verbosity. The default log level only shows warnings.
-* `--output` – override the destination JSON file (defaults to `config/device_profile.json`).
 
-The script scans for the matching device, connects, enumerates every service, characteristic, and descriptor, and then writes a structured profile to the output JSON file. This file becomes the canonical reference for later tooling that needs UUIDs or characteristic properties.
+The script spends the requested time harvesting every BLE advertisement it can see and writes a JSON summary to the discovery output file. Review that file to determine which device entry represents the skeleton. Once you know the friendly name or MAC address, rerun the script with the appropriate flag to connect, enumerate services and characteristics, and write a full profile for downstream tooling.
 
 ### Understanding `config/device_profile.json`
 
