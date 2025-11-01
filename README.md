@@ -6,6 +6,24 @@ Enhanced control program for the Grave & Bones Ultra Skele.
 
 To capture the Bluetooth Low Energy (BLE) services that power the skeleton, run the discovery tool in this repository. The tool requires the [`bleak`](https://github.com/hbldh/bleak) library and Python 3.8+.
 
+### Quick start
+
+Download the scanner script directly:
+
+```bash
+curl -o scan_ble.py https://raw.githubusercontent.com/YOUR_USERNAME/MKUltraSkelly/main/tools/scan_ble.py
+```
+
+Or using `wget`:
+
+```bash
+wget -O scan_ble.py https://raw.githubusercontent.com/YOUR_USERNAME/MKUltraSkelly/main/tools/scan_ble.py
+```
+
+### Installation
+
+Install the required dependencies:
+
 ```bash
 pip install bleak
 ```

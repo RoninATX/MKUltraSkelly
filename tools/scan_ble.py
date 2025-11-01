@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.metadata
 import json
 import logging
 from datetime import datetime, timezone
@@ -23,9 +24,17 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 try:
     from bleak import BleakClient, BleakError
-    from bleak import __version__ as bleak_version
     from bleak import BleakScanner
     from bleak.backends.device import BLEDevice
+    # Try to get version from __version__ (pip installations)
+    try:
+        from bleak import __version__ as bleak_version
+    except ImportError:
+        # Fall back to importlib.metadata (apt installations)
+        try:
+            bleak_version = importlib.metadata.version("bleak")
+        except Exception:
+            bleak_version = "unknown"
 except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional dep
     raise SystemExit(
         "The 'bleak' package is required to run this script. Install it via\n"
