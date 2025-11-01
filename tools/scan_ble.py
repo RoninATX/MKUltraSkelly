@@ -17,10 +17,12 @@ import asyncio
 import importlib.metadata
 import json
 import logging
+import platform
+import subprocess
 from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 try:
     from bleak import BleakClient, BleakError
@@ -45,6 +47,123 @@ except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional dep
 DEFAULT_SCAN_DURATION = 30.0
 DEFAULT_SCAN_OUTPUT_PATH = Path("config/discovered_devices.json")
 DEFAULT_PROFILE_OUTPUT_PATH = Path("config/device_profile.json")
+
+
+def check_bluetooth_adapter(adapter: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    """Check if Bluetooth adapter exists and is powered on.
+    
+    Returns:
+        Tuple of (is_available, error_message)
+    """
+    # On Linux/Raspberry Pi, check using hciconfig or bluetoothctl
+    if platform.system() != "Linux":
+        return True, None  # Skip checks on non-Linux systems
+    
+    adapter_name = adapter or "hci0"
+    
+    # Try hciconfig first (if available)
+    try:
+        result = subprocess.run(
+            ["hciconfig", adapter_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            output = result.stdout
+            if "UP" in output or "RUNNING" in output:
+                return True, None
+            elif "DOWN" in output:
+                logging.warning(f"Bluetooth adapter {adapter_name} is DOWN.")
+                return False, (
+                    f"Bluetooth adapter {adapter_name} is DOWN.\n"
+                    f"Power it on with: sudo hciconfig {adapter_name} up\n"
+                    f"Or use bluetoothctl: sudo bluetoothctl power on"
+                )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass  # hciconfig not available, try bluetoothctl
+    
+    # Fall back to bluetoothctl
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "show", adapter_name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            output = result.stdout
+            if "Powered: yes" in output:
+                return True, None
+            else:
+                logging.warning(f"Bluetooth adapter {adapter_name} is not powered.")
+                return False, (
+                    f"Bluetooth adapter {adapter_name} is not powered.\n"
+                    f"Power it on with: bluetoothctl power on\n"
+                    f"Or: sudo hciconfig {adapter_name} up"
+                )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    # If we can't check, assume it might work but warn
+    logging.warning(
+        "Could not verify Bluetooth adapter status (hciconfig/bluetoothctl not available). "
+        "Proceeding anyway, but if you get errors, check that Bluetooth is enabled."
+    )
+    return True, None
+
+
+def get_available_adapters() -> List[str]:
+    """List available Bluetooth adapters."""
+    adapters = []
+    
+    if platform.system() != "Linux":
+        return adapters
+    
+    # Try to get adapters from hciconfig
+    try:
+        result = subprocess.run(
+            ["hciconfig"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            # Parse hciX from output
+            for line in result.stdout.splitlines():
+                if line.strip().startswith("hci"):
+                    adapter = line.split()[0].rstrip(":")
+                    adapters.append(adapter)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    # Fall back to bluetoothctl
+    if not adapters:
+        try:
+            result = subprocess.run(
+                ["bluetoothctl", "list"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                # Parse controller addresses/names
+                for line in result.stdout.splitlines():
+                    if "Controller" in line or line.strip().startswith("hci"):
+                        # Try to extract adapter name
+                        parts = line.split()
+                        for part in parts:
+                            if part.startswith("hci"):
+                                adapters.append(part.rstrip(":"))
+                                break
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+    
+    # Default to hci0 if nothing found but on Linux
+    if not adapters and platform.system() == "Linux":
+        adapters = ["hci0"]
+    
+    return adapters
 
 
 @dataclass
@@ -161,9 +280,60 @@ def write_profile(profile: DeviceProfile, output_path: Path) -> None:
     logging.info("Device profile written to %s", output_path)
 
 
-async def scan_devices(duration: float) -> Sequence[BLEDevice]:
+async def scan_devices(duration: float, adapter: Optional[str] = None) -> Sequence[BLEDevice]:
+    """Scan for BLE devices with optional adapter specification."""
     logging.info("Scanning for BLE devices for %.1f seconds...", duration)
-    devices = await BleakScanner.discover(timeout=duration)
+    
+    # Check adapter availability before scanning (Linux only)
+    if platform.system() == "Linux":
+        available, error_msg = check_bluetooth_adapter(adapter)
+        if not available and error_msg:
+            raise SystemExit(
+                f"Bluetooth adapter not available: {error_msg}\n\n"
+                "For Raspberry Pi Zero W 2, ensure:\n"
+                "  1. Bluetooth service is running: sudo systemctl start bluetooth\n"
+                "  2. Adapter is powered on: sudo hciconfig hci0 up\n"
+                "  3. User is in bluetooth group: sudo usermod -aG bluetooth $USER\n"
+                "  4. pi-bluetooth package is installed: sudo apt install pi-bluetooth"
+            )
+    
+    # Create scanner with optional adapter
+    # On Linux/BlueZ, adapter can be specified when creating BleakScanner
+    try:
+        if adapter:
+            # Create scanner with specific adapter
+            scanner = BleakScanner(adapter=adapter)
+            devices = await scanner.discover(timeout=duration)
+        else:
+            # Use default adapter discovery
+            devices = await BleakScanner.discover(timeout=duration)
+    except BleakError as exc:
+        if "No powered Bluetooth adapters found" in str(exc):
+            available_adapters = get_available_adapters()
+            error_msg = (
+                f"Bluetooth adapter not detected: {exc}\n\n"
+                "Troubleshooting steps:\n"
+            )
+            if available_adapters:
+                error_msg += f"  Found adapters: {', '.join(available_adapters)}\n"
+                if adapter and adapter not in available_adapters:
+                    error_msg += f"  Specified adapter '{adapter}' not found.\n"
+                elif not adapter:
+                    error_msg += f"  Try specifying adapter explicitly: --adapter {available_adapters[0]}\n"
+            else:
+                error_msg += "  No adapters detected by system tools.\n"
+            
+            error_msg += (
+                "  For Raspberry Pi Zero W 2:\n"
+                "    1. Check Bluetooth service: sudo systemctl status bluetooth\n"
+                "    2. Power on adapter: sudo hciconfig hci0 up\n"
+                "    3. Verify in /boot/config.txt: ensure 'dtoverlay=disable-bt' is commented out\n"
+                "    4. Install pi-bluetooth: sudo apt install pi-bluetooth\n"
+                "    5. Reboot if needed: sudo reboot"
+            )
+            raise SystemExit(error_msg) from exc
+        raise
+    
     logging.info("Discovered %d devices", len(devices))
     for device in devices:
         logging.debug(
@@ -229,6 +399,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default=0,
         help="Increase logging verbosity (can be specified multiple times).",
     )
+    parser.add_argument(
+        "--adapter",
+        help="Bluetooth adapter to use (e.g., 'hci0' for Raspberry Pi). Auto-detected if not specified.",
+    )
     return parser.parse_args(argv)
 
 
@@ -244,7 +418,7 @@ def configure_logging(verbosity: int) -> None:
 
 
 async def async_main(args: argparse.Namespace) -> None:
-    devices = await scan_devices(args.scan_duration)
+    devices = await scan_devices(args.scan_duration, adapter=args.adapter)
     write_scan_results(devices, args.scan_output, args.scan_duration)
 
     if not args.device_name and not args.mac_address:
@@ -271,6 +445,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         asyncio.run(async_main(args))
     except KeyboardInterrupt:
         raise SystemExit("Scan cancelled by user.")
+    except SystemExit:
+        raise  # Re-raise SystemExit to preserve error messages
+    except Exception as exc:
+        if "No powered Bluetooth adapters found" in str(exc):
+            raise SystemExit(
+                f"Bluetooth adapter error: {exc}\n\n"
+                "For Raspberry Pi Zero W 2 troubleshooting, see the README."
+            ) from exc
+        raise
 
 
 if __name__ == "__main__":
